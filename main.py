@@ -1,96 +1,99 @@
-# main.py
+from fastapi import FastAPI, Request
+import httpx
 import os
-import requests
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")  # token del bot en BotFather
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("Falta TELEGRAM_TOKEN en las variables de entorno")
-
-BASE_TELEGRAM = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")  # opcional
 
 app = FastAPI()
 
-# --- Catálogo simple (ejemplo) ---
-PRODUCTS = {
-    "1": {"name": "Curso Básico", "price": "15.00", "currency": "USD", "buy": "https://tu-pago/curso-basico"},
-    "2": {"name": "Plantilla Funnel", "price": "29.00", "currency": "USD", "buy": "https://tu-pago/plantilla"},
-    "3": {"name": "Consultoría 30m", "price": "49.00", "currency": "USD", "buy": "https://tu-pago/consultoria"},
-}
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+PUBLIC_URL = os.getenv("PUBLIC_URL")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", TELEGRAM_TOKEN)
 
-# Función auxiliar para enviar mensajes a Telegram
-def send_message(chat_id: int, text: str, reply_markup: dict = None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    resp = requests.post(f"{BASE_TELEGRAM}/sendMessage", json=payload, timeout=10)
-    try:
-        resp.raise_for_status()
-    except Exception:
-        print("Error al enviar mensaje:", resp.text)
-    return resp.json()
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# Manejo de comandos
-def handle_update(update: dict):
-    if "message" not in update:
-        return
+# Lista de productos
+PRODUCTOS = [
+    {"id": 1, "nombre": "Laptop Ultra", "precio": 900, "link_pago": "https://pago.com/laptop"},
+    {"id": 2, "nombre": "Celular Pro", "precio": 500, "link_pago": "https://pago.com/celular"},
+    {"id": 3, "nombre": "Auriculares X", "precio": 150, "link_pago": "https://pago.com/auriculares"},
+]
 
-    msg = update["message"]
-    chat_id = msg["chat"]["id"]
-    text = msg.get("text", "")
+@app.get("/")
+async def home():
+    return {"message": "Bot de Ventas en Render funcionando 🚀"}
 
-    if text.startswith("/start"):
-        send_message(chat_id, "Hola 👋 soy tu Bot de Ventas. Usa /productos para ver lo que ofrezco.")
-        return
+@app.get("/set_webhook")
+async def set_webhook():
+    url = f"{PUBLIC_URL}/telegram/{WEBHOOK_SECRET}"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{BASE_URL}/setWebhook?url={url}")
+    return r.json()
 
-    if text.startswith("/productos") or text.lower().strip() == "productos":
-        lines = ["Productos disponibles:"]
-        for pid, p in PRODUCTS.items():
-            lines.append(f"{pid}. {p['name']} — {p['price']} {p['currency']}")
-        lines.append("\nEnvía /comprar <id> para recibir el link de pago.")
-        send_message(chat_id, "\n".join(lines))
-        return
+@app.post(f"/telegram/{{token}}")
+async def telegram_webhook(token: str, request: Request):
+    if token != WEBHOOK_SECRET:
+        return {"error": "Unauthorized"}
 
-    if text.startswith("/comprar"):
-        parts = text.split()
-        if len(parts) < 2:
-            send_message(chat_id, "Formato: /comprar <id>. Ejemplo: /comprar 1")
-            return
-        pid = parts[1].strip()
-        p = PRODUCTS.get(pid)
-        if not p:
-            send_message(chat_id, f"No encontré el producto {pid}. Usa /productos para ver ids válidos.")
-            return
-        reply_text = f"Has elegido <b>{p['name']}</b>\nPrecio: {p['price']} {p['currency']}\nPagar aquí: {p['buy']}"
-        reply_markup = {"inline_keyboard": [[{"text": "Pagar ahora", "url": p["buy"]}]]}
-        send_message(chat_id, reply_text, reply_markup=reply_markup)
-        return
+    data = await request.json()
 
-    send_message(chat_id, "No entendí tu mensaje. Prueba /productos o /comprar <id>.")
+    # Si es un mensaje de texto normal
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "").strip().lower().replace(" ", "")
 
-# Webhook de Telegram
-@app.post("/telegram/{token}")
-async def telegram_webhook(token: str, request: Request, background_tasks: BackgroundTasks):
-    if token != TELEGRAM_TOKEN and (WEBHOOK_SECRET and token != WEBHOOK_SECRET):
-        raise HTTPException(status_code=403, detail="Forbidden")
+        if text in ["/start", "start"]:
+            await send_message(chat_id, "👋 Hola, soy tu Bot de Ventas. Usa /productos para ver lo que ofrezco.")
+        elif text in ["/productos", "productos"]:
+            await mostrar_productos(chat_id)
+        elif text.isdigit():  # Si el usuario responde con un número
+            num = int(text)
+            producto = next((p for p in PRODUCTOS if p["id"] == num), None)
+            if producto:
+                await confirmar_compra(chat_id, producto)
+            else:
+                await send_message(chat_id, "❌ Número inválido. Usa /productos para ver la lista.")
+        else:
+            await send_message(chat_id, "🤖 No entiendo ese comando. Usa /productos.")
 
-    update = await request.json()
-    print("UPDATE RECIBIDO:", update)  # 👈 para ver qué llega en los logs
-    background_tasks.add_task(handle_update, update)
+    # Si es un callback (cuando aprieta un botón)
+    if "callback_query" in data:
+        cq = data["callback_query"]
+        chat_id = cq["message"]["chat"]["id"]
+        data_cb = cq["data"]
+
+        if data_cb.startswith("comprar_"):
+            prod_id = int(data_cb.split("_")[1])
+            producto = next((p for p in PRODUCTOS if p["id"] == prod_id), None)
+            if producto:
+                await send_message(chat_id, f"✅ Aquí está tu link de pago: {producto['link_pago']}")
+        elif data_cb == "cancelar":
+            await send_message(chat_id, "❌ Compra cancelada.")
+
     return {"ok": True}
 
-# Endpoint para setear webhook
-@app.get("/set_webhook")
-def set_webhook():
-    domain = os.environ.get("PUBLIC_URL")
-    if not domain:
-        raise HTTPException(status_code=400, detail="Set PUBLIC_URL env var")
-    webhook_url = f"{domain}/telegram/{TELEGRAM_TOKEN}"
-    resp = requests.post(f"{BASE_TELEGRAM}/setWebhook", data={"url": webhook_url}, timeout=10)
-    return resp.json()
+# ================= FUNCIONES ===================
 
-# Endpoint de prueba
-@app.get("/")
-def home():
-    return {"message": "Bot de Ventas en Render funcionando 🚀"}
+async def send_message(chat_id, text, reply_markup=None):
+    async with httpx.AsyncClient() as client:
+        payload = {"chat_id": chat_id, "text": text}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        await client.post(f"{BASE_URL}/sendMessage", json=payload)
+
+async def mostrar_productos(chat_id):
+    texto = "🛍️ *Lista de productos:*\n\n"
+    for p in PRODUCTOS:
+        texto += f"{p['id']}. {p['nombre']} - ${p['precio']}\n"
+    texto += "\n👉 Responde con el número del producto para comprarlo."
+
+    await send_message(chat_id, texto)
+
+async def confirmar_compra(chat_id, producto):
+    markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Sí", "callback_data": f"comprar_{producto['id']}"},
+                {"text": "❌ No", "callback_data": "cancelar"}
+            ]
+        ]
+    }
+    await send_message(chat_id, f"¿Quieres comprar *{producto['nombre']}* por ${producto['precio']}?", reply_markup=markup)
