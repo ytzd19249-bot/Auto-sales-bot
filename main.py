@@ -1,12 +1,7 @@
-from flask import Flask
-import os
+from fastapi import FastAPI
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route("/")
-def home():
-    return "✅ Bot de ventas corriendo"
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+@app.get("/")
+def read_root():
+    return {"message": "Hola, Railway está funcionando 🚀"}
