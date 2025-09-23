@@ -1,42 +1,35 @@
-from fastapi import FastAPI, Request
-import requests, os
-from db import SessionLocal, Producto
+from fastapi import FastAPI, Request, Depends
+import requests
+import os
+from db import Base, engine, SessionLocal, get_db
+from sqlalchemy.orm import Session
 
-TOKEN = os.getenv("BOT_VENTAS_TOKEN")
-URL = f"https://api.telegram.org/bot{TOKEN}"
+# Inicializamos tablas en la base de datos
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-def send_message(chat_id, text):
-    requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 @app.post("/webhook")
-async def webhook(req: Request):
-    data = await req.json()
+async def webhook(request: Request, db: Session = Depends(get_db)):
+    data = await request.json()
+
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
-        if text.lower() == "/start":
-            send_message(chat_id, "¡Bienvenido al Bot de Ventas! Escriba /catalogo para ver los productos.")
-        
-        elif text.lower() == "/catalogo":
-            db = SessionLocal()
-            productos = db.query(Producto).all()
-            if not productos:
-                send_message(chat_id, "No hay productos disponibles por ahora.")
-            else:
-                for p in productos:
-                    send_message(chat_id, f"{p.nombre} - ${p.precio}\n{p.descripcion}")
-            db.close()
+        # Respuesta básica (se puede mejorar después)
+        response_text = f"Recibí tu mensaje: {text}"
 
-        elif text.lower().startswith("/investigar"):
-            # Mandar consulta al bot de investigación
-            query = text.replace("/investigar", "").strip()
-            send_message(chat_id, f"Derivando consulta al bot de investigación: {query}")
-            # Aquí se puede hacer un requests.post al webhook del bot de investigación si queremos conexión directa
+        requests.post(WEBHOOK_URL, json={
+            "chat_id": chat_id,
+            "text": response_text
+        })
 
-        else:
-            send_message(chat_id, "Comando no reconocido. Use /catalogo o /investigar <tema>.")
-    
     return {"ok": True}
+
+@app.get("/")
+def home():
+    return {"status": "Bot de Ventas funcionando 🚀"}
