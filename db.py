@@ -1,29 +1,31 @@
 # db.py
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
 
-# Base de datos SQLite
-DATABASE_URL = "sqlite:///./productos.db"
+# Cargar la URL de la base de datos desde las variables de entorno
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Crear motor de conexión
+engine = create_engine(DATABASE_URL)
 
+# Crear base declarativa
 Base = declarative_base()
 
-
-# Modelo de productos
+# Definir tabla de productos
 class Producto(Base):
     __tablename__ = "productos"
 
     id = Column(Integer, primary_key=True, index=True)
-    nombre = Column(String(200), nullable=False)
-    descripcion = Column(Text, nullable=True)
-    precio = Column(Float, nullable=True)
-    moneda = Column(String(10), default="USD")
-    link = Column(String(500), nullable=True)
-    source = Column(String(100), nullable=True)
-    activo = Column(Boolean, default=True)
+    nombre = Column(String, nullable=False)
+    precio = Column(Float, nullable=False)
+    moneda = Column(String, default="USD")
+    link = Column(String, nullable=True)
 
+# Crear sesión
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Inicializar DB
 def init_db():
     Base.metadata.create_all(bind=engine)
