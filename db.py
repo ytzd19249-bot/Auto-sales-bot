@@ -1,4 +1,3 @@
-# db.py
 import os
 from datetime import datetime
 from sqlalchemy import (
@@ -6,21 +5,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Leer la URL desde variables de entorno (Render -> Environment)
+# Leer DATABASE_URL desde variables de entorno en Render
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    # fallback (solo local/testing) — reemplazar si hace falta
-    DATABASE_URL = "postgresql+psycopg2://usuario:clave@host:5432/dbname?sslmode=require"
+    # Fallback SOLO si se corre local (Render usa la Internal DB)
+    DATABASE_URL = "postgresql+psycopg2://base_de_datos_bots_user:LCnduyuUSlIcnkoxz5BdMlAQaEScQXKV@dpg-d38nd2odl3ps73a4p35g-a/base_de_datos_bots"
 
-# Crear engine con protección de conexión (reintentos / pre-ping)
-# connect_args incluye sslmode por seguridad adicional
+# Crear engine con pre_ping para mantener vivas las conexiones
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     pool_size=5,
-    max_overflow=10,
-    connect_args={"sslmode": "require"}
+    max_overflow=10
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -37,7 +34,7 @@ class Producto(Base):
     precio = Column(Float, nullable=False, default=0.0)
     moneda = Column(String(10), nullable=False, default="USD")
     link = Column(String(1024), nullable=True)
-    source = Column(String(100), nullable=True)   # ej: Hotmart, Amazon, etc.
+    source = Column(String(100), nullable=True)  # ej: Hotmart, Amazon, etc.
     activo = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
