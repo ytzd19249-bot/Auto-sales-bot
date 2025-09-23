@@ -1,43 +1,77 @@
-from fastapi import FastAPI, Request
-import httpx
+# main.py
 import os
-from openai import OpenAI
+import httpx
+from fastapi import FastAPI, Request
+from db import SessionLocal, Producto, init_db
+from sqlalchemy.orm import Session
+import openai
 
+# Inicializar FastAPI
 app = FastAPI()
 
-# 🔑 Variables de entorno (ponerlas en Render)
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Inicializar DB
+init_db()
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+# Cargar variables de entorno
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_KEY
 
-# Cliente de OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Enviar mensaje a Telegram
 async def send_message(chat_id: int, text: str):
-    async with httpx.AsyncClient() as http_client:
-        await http_client.post(TELEGRAM_API_URL, json={"chat_id": chat_id, "text": text})
+    url = f"{BASE_URL}/sendMessage"
+    async with httpx.AsyncClient() as client:
+        await client.post(url, json={"chat_id": chat_id, "text": text})
 
+
+# Procesar mensaje del usuario
+async def process_message(chat_id: int, text: str, db: Session):
+    text_lower = text.lower()
+
+    # 1. Revisar si pide productos
+    producto = db.query(Producto).filter(Producto.nombre.ilike(f"%{text_lower}%")).first()
+    if producto:
+        respuesta = f"📦 {producto.nombre}\n💲 {producto.precio} {producto.moneda}\n🔗 {producto.link or 'No disponible'}"
+        await send_message(chat_id, respuesta)
+        return
+
+    # 2. Si no es producto → usar inteligencia conversacional
+    if OPENAI_KEY:
+        try:
+            completion = openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente de ventas amable, conversacional, que puede responder como persona en varios idiomas."},
+                    {"role": "user", "content": text}
+                ]
+            )
+            respuesta = completion.choices[0].message.content
+            await send_message(chat_id, respuesta)
+        except Exception as e:
+            await send_message(chat_id, f"⚠️ Error con OpenAI: {str(e)}")
+    else:
+        # Fallback sin IA
+        await send_message(chat_id, f"🤖 Recibí tu mensaje: {text}")
+
+
+# Webhook de Telegram
 @app.post("/webhook")
-async def webhook(request: Request):
+async def telegram_webhook(request: Request):
     data = await request.json()
-
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        user_text = data["message"].get("text", "")
+        text = data["message"].get("text", "")
 
-        if user_text.startswith("/start"):
-            await send_message(chat_id, "👋 Hola mae, bienvenido a CompraFácil Bot ⚡")
-        elif user_text.startswith("/products"):
-            await send_message(chat_id, "📦 Tenemos: Celulares, Laptops y Audífonos.")
-        else:
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": user_text}]
-                )
-                bot_reply = response.choices[0].message.content
-                await send_message(chat_id, bot_reply)
-            except Exception as e:
-                await send_message(chat_id, f"⚠️ Error con OpenAI: {str(e)}")
+        db = SessionLocal()
+        await process_message(chat_id, text, db)
+        db.close()
+
     return {"ok": True}
+
+
+# Root endpoint (para Render healthcheck)
+@app.get("/")
+async def root():
+    return {"message": "🤖 Bot de Ventas inteligente en Render 🚀"}
