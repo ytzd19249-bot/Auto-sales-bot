@@ -1,92 +1,42 @@
 from fastapi import FastAPI, Request
-import httpx
+import requests, os
 from db import SessionLocal, Producto
+
+TOKEN = os.getenv("BOT_VENTAS_TOKEN")
+URL = f"https://api.telegram.org/bot{TOKEN}"
 
 app = FastAPI()
 
-# Función para enviar mensajes a Telegram
-async def send_message(token, chat_id, text):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            url,
-            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        )
-
-
-@app.get("/")
-async def root():
-    return {"message": "🤖 Bot de Ventas funcionando en Render 🚀"}
-
+def send_message(chat_id, text):
+    requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 @app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
+async def webhook(req: Request):
+    data = await req.json()
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-    if "message" not in data:
-        return {"ok": True}
-
-    message = data["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
-
-    # Apertura de sesión DB
-    db = SessionLocal()
-
-    try:
-        # Si el usuario saluda
-        if text.lower() in ["hola", "hi", "hello", "buenos días", "buenas", "hey"]:
-            await send_message(
-                os.getenv("TELEGRAM_TOKEN"),
-                chat_id,
-                "👋 ¡Hola! Soy tu asesor virtual de ventas. Pregúntame por cualquier producto o escribe *ver productos*."
-            )
-            return {"ok": True}
-
-        # Mostrar productos
-        if text.lower() in ["productos", "ver productos", "/productos"]:
-            productos = db.query(Producto).filter(Producto.activo == True).all()
+        if text.lower() == "/start":
+            send_message(chat_id, "¡Bienvenido al Bot de Ventas! Escriba /catalogo para ver los productos.")
+        
+        elif text.lower() == "/catalogo":
+            db = SessionLocal()
+            productos = db.query(Producto).all()
             if not productos:
-                await send_message(
-                    os.getenv("TELEGRAM_TOKEN"),
-                    chat_id,
-                    "🚫 No hay productos disponibles en este momento."
-                )
+                send_message(chat_id, "No hay productos disponibles por ahora.")
             else:
-                lista = "\n".join(
-                    [f"{p.id}. {p.titulo} - {p.precio} {p.moneda}" for p in productos]
-                )
-                await send_message(
-                    os.getenv("TELEGRAM_TOKEN"),
-                    chat_id,
-                    f"🛍️ *Lista de productos disponibles:*\n{lista}\n👉 Escribe el número del producto para más info."
-                )
-            return {"ok": True}
+                for p in productos:
+                    send_message(chat_id, f"{p.nombre} - ${p.precio}\n{p.descripcion}")
+            db.close()
 
-        # Si escribe un número de producto
-        if text.isdigit():
-            producto = db.query(Producto).filter(Producto.id == int(text)).first()
-            if producto:
-                if producto.activo:
-                    msg = f"✅ {producto.titulo} cuesta {producto.precio} {producto.moneda}.\nCompra aquí 👉 {producto.link}"
-                else:
-                    msg = f"🚫 El producto *{producto.titulo}* ya no está disponible."
-                await send_message(os.getenv("TELEGRAM_TOKEN"), chat_id, msg)
-            else:
-                await send_message(
-                    os.getenv("TELEGRAM_TOKEN"),
-                    chat_id,
-                    "❓ Producto no encontrado. Escribe *ver productos* para revisar el catálogo."
-                )
-            return {"ok": True}
+        elif text.lower().startswith("/investigar"):
+            # Mandar consulta al bot de investigación
+            query = text.replace("/investigar", "").strip()
+            send_message(chat_id, f"Derivando consulta al bot de investigación: {query}")
+            # Aquí se puede hacer un requests.post al webhook del bot de investigación si queremos conexión directa
 
-        # Respuesta general (para conversación más humana)
-        await send_message(
-            os.getenv("TELEGRAM_TOKEN"),
-            chat_id,
-            f"🤝 Gracias por tu mensaje: *{text}*. Si deseas ver opciones disponibles, escribe *ver productos*."
-        )
-        return {"ok": True}
-
-    finally:
-        db.close()
+        else:
+            send_message(chat_id, "Comando no reconocido. Use /catalogo o /investigar <tema>.")
+    
+    return {"ok": True}
