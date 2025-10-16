@@ -1,19 +1,15 @@
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from typing import List, Optional
 import os
 from datetime import datetime, timedelta
-
-# DB (SQLAlchemy)
 from sqlalchemy import create_engine, Integer, String, Float, DateTime, Boolean, Text, func
 from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
-
-# Scheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pydantic import BaseModel
 
-# ===== App =====
 app = FastAPI()
 
-# ===== Env =====
+# ===== Variables de entorno =====
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -22,16 +18,15 @@ if not ADMIN_TOKEN:
 if not DATABASE_URL:
     print("⚠️ Falta DATABASE_URL")
 
-# ===== DB setup =====
+# ===== Config DB =====
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 class Product(Base):
     __tablename__ = "sales_products"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ext_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)  # id externo (afiliado)
+    ext_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(500))
     price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -53,8 +48,6 @@ def require_token(authorization: Optional[str]):
         raise HTTPException(status_code=403, detail="Invalid token")
 
 # ===== Schemas =====
-from pydantic import BaseModel
-
 class InProduct(BaseModel):
     title: str
     url: Optional[str] = None
@@ -67,9 +60,9 @@ class PurchaseEvent(BaseModel):
     product_id: int
     qty: int = 1
 
-# ===== Routes =====
+# ===== Rutas =====
 @app.get("/")
-def health():
+def root():
     return {"ok": True, "service": "bot-ventas", "message": "En línea ✅"}
 
 @app.post("/sales/ingest")
@@ -79,39 +72,21 @@ def ingest(products: List[InProduct], authorization: Optional[str] = Header(None
     try:
         inserted, updated = 0, 0
         for p in products:
-            # upsert por ext_id o por (title+url)
             rec = None
             if p.ext_id:
                 rec = db.query(Product).filter(Product.ext_id == p.ext_id).one_or_none()
             if not rec:
-                rec = db.query(Product).filter(
-                    Product.title == p.title,
-                    Product.url == p.url
-                ).one_or_none()
-
+                rec = db.query(Product).filter(Product.title == p.title, Product.url == p.url).one_or_none()
             if rec:
-                # update
-                if p.price is not None:
-                    rec.price = p.price
-                if p.image:
-                    rec.image = p.image
-                if p.source:
-                    rec.source = p.source
+                if p.price is not None: rec.price = p.price
+                if p.image: rec.image = p.image
+                if p.source: rec.source = p.source
                 rec.updated_at = datetime.utcnow()
                 updated += 1
             else:
-                # insert
-                rec = Product(
-                    ext_id=p.ext_id,
-                    title=p.title,
-                    price=p.price,
-                    url=p.url,
-                    image=p.image,
-                    source=p.source,
-                )
+                rec = Product(ext_id=p.ext_id, title=p.title, price=p.price, url=p.url, image=p.image, source=p.source)
                 db.add(rec)
                 inserted += 1
-
         db.commit()
         return {"ok": True, "inserted": inserted, "updated": updated}
     finally:
@@ -133,12 +108,9 @@ def register_purchase(evt: PurchaseEvent, authorization: Optional[str] = Header(
         db.close()
 
 # ===== Limpieza automática =====
-# Regla:
-# - Archivar si lleva >= 60 días sin compras (purchased_count == 0)
-# - Borrar si lleva >= 120 días y purchased_count == 0
 scheduler = AsyncIOScheduler()
 
-@scheduler.scheduled_job("cron", hour=3)  # todos los días 03:00 UTC
+@scheduler.scheduled_job("cron", hour=3)
 def cleanup_job():
     db = SessionLocal()
     try:
@@ -146,7 +118,6 @@ def cleanup_job():
         limit_archive = now - timedelta(days=60)
         limit_delete  = now - timedelta(days=120)
 
-        # Archivar (marcar)
         to_archive = db.query(Product).filter(
             Product.purchased_count == 0,
             Product.archived == False,
@@ -156,7 +127,6 @@ def cleanup_job():
             r.archived = True
             r.updated_at = now
 
-        # Borrar definitivos
         deleted = db.query(Product).filter(
             Product.purchased_count == 0,
             Product.created_at <= limit_delete
@@ -172,6 +142,6 @@ async def startup():
     print("🚀 bot-ventas en línea.")
     try:
         scheduler.start()
-    except Exception:
-        # si ya estaba iniciado por hot-reload, ignorar
-        pass
+        print("🕒 Scheduler iniciado correctamente.")
+    except Exception as e:
+        print(f"⚠️ No se pudo iniciar el scheduler: {e}")
