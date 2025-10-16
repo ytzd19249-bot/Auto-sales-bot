@@ -1,115 +1,117 @@
-# main.py
 import os, asyncio, httpx, openai
 from fastapi import FastAPI, Request
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, text
 
 # ───────────────────────────────
-#  CONFIGURACIÓN
+# CONFIGURACIÓN GENERAL
 # ───────────────────────────────
 app = FastAPI()
 
-DATABASE_URL = os.getenv("DATABASE_URL")           # completa en Render
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")       # completa en Render
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")       # completa en Render
+DATABASE_URL = os.getenv("DATABASE_URL")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # URL pública de Render
 openai.api_key = OPENAI_API_KEY
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+engine = create_engine(DATABASE_URL)
 
 # ───────────────────────────────
-#  FUNCIONES DE BASE DE DATOS
+# FUNCIONES TELEGRAM
 # ───────────────────────────────
-def obtener_productos():
-    with engine.begin() as conn:
-        result = conn.execute(text("""
-            SELECT nombre, precio, moneda, fuente
-            FROM productos
-            ORDER BY created_at DESC
-            LIMIT 5;
-        """)).fetchall()
-    return [f"{r[0]} - {r[1]} {r[2]} ({r[3]})" for r in result]
-
-def limpiar_viejos():
-    with engine.begin() as conn:
-        conn.execute(text("""
-            DELETE FROM productos
-            WHERE created_at < NOW() - INTERVAL '120 days';
-        """))
-    print("🧹 Productos viejos eliminados.")
+async def enviar_mensaje(chat_id, texto):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}
+    async with httpx.AsyncClient() as client:
+        await client.post(url, json=payload)
 
 # ───────────────────────────────
-#  CICLO AUTOMÁTICO
+# LÓGICA DEL BOT DE VENTAS
+# ───────────────────────────────
+async def manejar_mensaje_ventas(data):
+    if "message" not in data:
+        return
+
+    chat_id = data["message"]["chat"]["id"]
+    texto = data["message"].get("text", "").lower()
+
+    if "hola" in texto:
+        await enviar_mensaje(chat_id, "¡Hola! Soy el *bot de ventas* 💰")
+    elif "productos" in texto or "ver productos" in texto:
+        await enviar_mensaje(chat_id, "Buscando los productos más vendidos... 🔍")
+        await enviar_productos(chat_id)
+    else:
+        await enviar_mensaje(chat_id, "No entendí eso, pero estoy aquí para ayudarte a vender 😎")
+
+# ───────────────────────────────
+# FUNCIÓN PARA ENVIAR PRODUCTOS
+# ───────────────────────────────
+async def enviar_productos(chat_id):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT nombre, enlace, precio FROM productos ORDER BY fecha DESC LIMIT 5"))
+            productos = result.fetchall()
+
+        if not productos:
+            await enviar_mensaje(chat_id, "Aún no hay productos cargados por el bot investigador 🕐")
+            return
+
+        mensaje = "🛍 *Top productos más vendidos:*\n\n"
+        for p in productos:
+            nombre, enlace, precio = p
+            mensaje += f"• [{nombre}]({enlace}) — ${precio}\n"
+
+        await enviar_mensaje(chat_id, mensaje)
+    except Exception as e:
+        await enviar_mensaje(chat_id, f"⚠️ Error al obtener productos: {e}")
+
+# ───────────────────────────────
+# ENDPOINT DEL WEBHOOK DE VENTAS
+# ───────────────────────────────
+@app.post("/webhook_ventas")
+async def webhook_ventas(request: Request):
+    data = await request.json()
+    await manejar_mensaje_ventas(data)
+    return {"ok": True}
+
+# ───────────────────────────────
+# CONFIGURACIÓN DEL SCHEDULER (CADA 12 HORAS)
 # ───────────────────────────────
 scheduler = AsyncIOScheduler()
 
 @scheduler.scheduled_job("interval", hours=12)
-def ciclo_automatico():
-    limpiar_viejos()
-    print("🔁 Ciclo automático ejecutado.")
-
-scheduler.start()
-
-# ───────────────────────────────
-#  IA PROFESIONAL
-# ───────────────────────────────
-def responder_con_ia(texto_usuario):
-    prompt = f"""
-Eres el asistente de ventas oficial de Josue, especializado en atención profesional a clientes.
-Tu tono debe ser respetuoso, confiado y claro. Evita chistes o informalidades.
-Responde siempre con precisión y orientación al cliente, ofreciendo ayuda real.
-Si te preguntan por productos, habla de lo que está disponible en la base de datos.
-Texto del cliente: "{texto_usuario}"
-"""
-    completion = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "Eres un asesor de ventas serio y profesional."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return completion.choices[0].message.content.strip()
+async def ciclo_ventas():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                DELETE FROM productos
+                WHERE fecha < NOW() - INTERVAL '120 days' AND vendidos = 0
+            """))
+            conn.commit()
+        print("🧹 Limpieza de productos antiguos completada.")
+    except Exception as e:
+        print(f"Error en limpieza automática: {e}")
 
 # ───────────────────────────────
-#  WEBHOOK TELEGRAM
+# INICIO DEL BOT
 # ───────────────────────────────
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    message = data.get("message", {})
-    chat_id = message.get("chat", {}).get("id")
-    texto = (message.get("text") or "").lower()
-
-    if not chat_id or not texto:
-        return {"ok": True}
-
-    if "hola" in texto or "buenas" in texto:
-        await enviar_mensaje(chat_id, "Buen día. Soy el asistente de ventas de Josue, ¿en qué puedo ayudarle?")
-    elif "productos" in texto or "catálogo" in texto:
-        lista = obtener_productos()
-        if lista:
-            texto_resp = "📦 Productos disponibles:\n" + "\n".join(lista)
-        else:
-            texto_resp = "En este momento no hay productos registrados."
-        await enviar_mensaje(chat_id, texto_resp)
-    else:
-        respuesta = responder_con_ia(texto)
-        await enviar_mensaje(chat_id, respuesta)
-
-    return {"ok": True}
-
-# ───────────────────────────────
-#  FUNCIÓN DE ENVÍO
-# ───────────────────────────────
-async def enviar_mensaje(chat_id, texto):
+@app.on_event("startup")
+async def startup_event():
+    scheduler.start()
     async with httpx.AsyncClient() as client:
-        await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": texto}
+        await client.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            params={"url": f"{PUBLIC_URL}/webhook_ventas"},
         )
+    print("🚀 Bot de ventas iniciado correctamente y webhook configurado.")
 
-# ───────────────────────────────
-#  RUTA RAÍZ
-# ───────────────────────────────
 @app.get("/")
 def home():
-    return {"status": "bot de ventas activo 🚀"}
+    return {"status": "Bot de ventas activo 🚀"}
+
+# ───────────────────────────────
+# EJECUCIÓN LOCAL
+# ───────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
