@@ -3,28 +3,44 @@ import os
 import re
 import httpx
 import openai
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, Request, HTTPException
-from db import SessionLocal, Producto, init_db
+from contextlib import asynccontextmanager
+
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 
-app = FastAPI(title="Bot de Ventas - CompraFácil")
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
-# init DB (crea tablas si no existen)
+from db import SessionLocal, Producto, init_db
+
+# =========================
+# App + Scheduler
+# =========================
+scheduler = AsyncIOScheduler()
+
+# =========================
+# INIT DB
+# =========================
 init_db()
 
-# ENV (poner en Render)
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")          # token del bot de Telegram
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")        # clave OpenAI (opcional, mejora respuestas)
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")          # token que usa el bot investigador para actualizar catálogo (opcional)
-PUBLIC_URL = os.getenv("PUBLIC_URL", "")            # ej: https://auto-sales-bot.onrender.com
-
+# =========================
+# ENV
+# =========================
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")   # token del bot de Telegram
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # opcional
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")    # token que usa el investigador/checkout
+PUBLIC_URL  = os.getenv("PUBLIC_URL", "")     # ej: https://auto-sales-bot.onrender.com
 BASE_TELEGRAM = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# configurar OpenAI si existe
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
-# util — enviar mensaje simple a Telegram
+# =========================
+# Utils
+# =========================
 async def send_message(chat_id: int, text: str, parse_mode: str = "Markdown"):
     if not BOT_TOKEN:
         return None
@@ -37,18 +53,20 @@ async def send_message(chat_id: int, text: str, parse_mode: str = "Markdown"):
         except Exception:
             return None
 
-# lógica conversacional / manejo productos
 def normalize_text(t: str) -> str:
     return re.sub(r"\s+", " ", t.strip().lower())
 
+# =========================
+# Lógica conversacional
+# =========================
 async def handle_user_message(chat_id: int, text: str, db: Session):
     t = normalize_text(text)
 
-    # SALUDOS simples
+    # SALUDOS
     if re.search(r"\b(hola|buenas|buenos días|buenas tardes|buenas noches|hey)\b", t):
         return await send_message(chat_id, "👋 ¡Hola! Soy tu asistente de ventas. ¿En qué te ayudo hoy?")
 
-    # PEDIR CATÁLOGO
+    # CATÁLOGO
     if re.search(r"\b(producto|productos|catálogo|catalogo|qué tienen|qué venden|tienen)\b", t):
         productos = db.query(Producto).filter(Producto.activo == True).order_by(Producto.created_at.desc()).limit(50).all()
         if not productos:
@@ -57,7 +75,7 @@ async def handle_user_message(chat_id: int, text: str, db: Session):
         text_out = "🛍️ Productos disponibles:\n\n" + "\n".join(lines[:20]) + "\n\nEscribe el número del producto para ver detalles."
         return await send_message(chat_id, text_out)
 
-    # SI EL MENSAJE ES UN NÚMERO -> detalle del producto
+    # DETALLE POR ID
     m = re.match(r"^(\d+)$", t)
     if m:
         pid = int(m.group(1))
@@ -66,14 +84,19 @@ async def handle_user_message(chat_id: int, text: str, db: Session):
             return await send_message(chat_id, "❌ No encontré ese producto. Escribí 'productos' para ver la lista.")
         if not prod.activo:
             return await send_message(chat_id, f"🚫 {prod.nombre} no está disponible.")
-        detail = f"✅ *{prod.nombre}*\n{prod.descripcion or 'Sin descripción.'}\nPrecio: {prod.precio} {prod.moneda}\nCompra: {prod.link or 'Enlace no disponible.'}"
+        detail = (
+            f"✅ *{prod.nombre}*\n"
+            f"{prod.descripcion or 'Sin descripción.'}\n"
+            f"Precio: {prod.precio} {prod.moneda}\n"
+            f"Compra: {prod.link or 'Enlace no disponible.'}"
+        )
         return await send_message(chat_id, detail)
 
-    # SI HAY CLAVE OPENAI -> usar IA conversacional para responder (multi-idioma)
+    # IA opcional
     if OPENAI_API_KEY:
         try:
             resp = openai.ChatCompletion.create(
-                model="gpt-4o-mini",  # si su plan no tiene, cambiar a gpt-3.5-turbo u otro disponible
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "Eres un vendedor amable, claro y profesional. Responde como una persona en el idioma del usuario. Si es pregunta sobre un producto, pide el id o muestra catálogo."},
                     {"role": "user", "content": text}
@@ -83,15 +106,16 @@ async def handle_user_message(chat_id: int, text: str, db: Session):
             )
             answer = resp["choices"][0]["message"]["content"]
             return await send_message(chat_id, answer)
-        except Exception as e:
-            # fallback legible si OpenAI falla
+        except Exception:
             await send_message(chat_id, "⚠️ Error en IA. Te respondo rápidamente: " + (text[:300] if text else ""))
             return
 
-    # fallback sin IA
+    # Fallback
     return await send_message(chat_id, f"🤖 Recibí tu mensaje: {text}\n(Escribe 'productos' para ver el catálogo.)")
 
-# Webhook principal que Telegram llamará (POST)
+# =========================
+# Webhook de Telegram
+# =========================
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     try:
@@ -114,7 +138,9 @@ async def telegram_webhook(request: Request):
 
     return {"ok": True}
 
-# Endpoint admin para actualizar catálogo (usado por Bot Investigador)
+# =========================
+# Admin: upsert de productos (desde Investigador)
+# =========================
 @app.post("/admin/update_products")
 async def admin_update_products(request: Request):
     token = request.headers.get("x-admin-token", "")
@@ -123,36 +149,43 @@ async def admin_update_products(request: Request):
     data = await request.json()
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="Invalid body")
+
     db = SessionLocal()
     updated = []
     try:
         for k, v in data.items():
-            # si k es numérico, intentar actualizar por id; si no, crear nuevo
-            try:
-                pid = int(k)
-            except:
-                pid = None
-            if pid:
-                prod = db.query(Producto).filter(Producto.id == pid).first()
-            else:
-                prod = None
+            # busca por link (preferido) o id/nombre
+            link = v.get("link")
+            prod = None
+            if link:
+                prod = db.query(Producto).filter(Producto.link == link).first()
+            if not prod:
+                try:
+                    pid = int(k)
+                    prod = db.query(Producto).filter(Producto.id == pid).first()
+                except:
+                    prod = None
+
             if prod:
                 prod.nombre = v.get("nombre", prod.nombre)
                 prod.descripcion = v.get("descripcion", prod.descripcion)
-                prod.precio = float(v.get("precio", prod.precio or 0))
+                try:
+                    prod.precio = float(v.get("precio", prod.precio or 0))
+                except:
+                    pass
                 prod.moneda = v.get("moneda", prod.moneda or "USD")
-                prod.link = v.get("link", prod.link)
-                prod.source = v.get("source", prod.source)
-                prod.activo = v.get("activo", prod.activo)
+                prod.link = link or prod.link
+                prod.source = v.get("source", prod.source or "investigador")
+                prod.activo = bool(v.get("activo", True))
             else:
                 new = Producto(
                     nombre=v.get("nombre", "Sin nombre"),
                     descripcion=v.get("descripcion", ""),
-                    precio=float(v.get("precio", 0)),
+                    precio=float(v.get("precio", 0) or 0),
                     moneda=v.get("moneda", "USD"),
-                    link=v.get("link"),
-                    source=v.get("source"),
-                    activo=v.get("activo", True),
+                    link=link,
+                    source=v.get("source", "investigador"),
+                    activo=bool(v.get("activo", True)),
                 )
                 db.add(new)
             updated.append(k)
@@ -161,6 +194,76 @@ async def admin_update_products(request: Request):
         db.close()
     return {"ok": True, "updated": updated}
 
-@app.get("/")
-def root():
-    return {"status": "ok", "message": "Bot de Ventas funcionando 🚀"}
+# =========================
+# Admin: sync masivo (solo upsert, NO desactiva por ausencia)
+# =========================
+@app.post("/admin/sync_products")
+async def admin_sync_products(request: Request):
+    token = request.headers.get("x-admin-token", "")
+    if not ADMIN_TOKEN or token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    payload = await request.json()
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="Invalid body: items[] required")
+
+    db = SessionLocal()
+    try:
+        upserted = 0
+        for v in items:
+            link = v.get("link")
+            nombre = v.get("nombre", "Sin nombre")
+            q = db.query(Producto)
+            prod = q.filter(Producto.link == link).first() if link else q.filter(Producto.nombre == nombre).first()
+            if prod:
+                prod.nombre = nombre or prod.nombre
+                prod.descripcion = v.get("descripcion", prod.descripcion)
+                try:
+                    prod.precio = float(v.get("precio", prod.precio or 0))
+                except:
+                    pass
+                prod.moneda = v.get("moneda", prod.moneda or "USD")
+                if link: prod.link = link
+                prod.source = v.get("source", prod.source or "investigador")
+                prod.activo = bool(v.get("activo", True))
+            else:
+                nuevo = Producto(
+                    nombre=nombre,
+                    descripcion=v.get("descripcion", ""),
+                    precio=float(v.get("precio", 0) or 0),
+                    moneda=v.get("moneda", "USD"),
+                    link=link,
+                    source=v.get("source", "investigador"),
+                    activo=bool(v.get("activo", True)),
+                )
+                db.add(nuevo)
+            upserted += 1
+        db.commit()
+        return {"ok": True, "upserted": upserted}
+    finally:
+        db.close()
+
+# =========================
+# Admin: registrar venta (reactiva y marca fecha)
+# =========================
+@app.post("/admin/record_sale")
+async def admin_record_sale(request: Request):
+    token = request.headers.get("x-admin-token", "")
+    if not ADMIN_TOKEN or token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    body = await request.json()
+    pid = int(body.get("product_id", 0))
+    if not pid:
+        raise HTTPException(status_code=400, detail="product_id requerido")
+
+    db = SessionLocal()
+    try:
+        p = db.query(Producto).filter(Producto.id == pid).first()
+        if not p:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        p.ventas_total = (p.ventas_total or 0) + 1
+        p.ultima_venta_at = datetime.utcnow()
+        p.activo = True  # si estaba inactivo, lo reactiva
+        db.commit()
