@@ -1,7 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, Request, HTTPException, Depends, Header
-from sqlalchemy import create_engine, Column, Integer, String, Numeric, DateTime, func, text
+from sqlalchemy import create_engine, Column, Integer, String, Numeric, DateTime, func, text as sql_text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel
@@ -57,7 +57,7 @@ def recibir_producto(payload: ProductoIn):
     db = SessionLocal()
     try:
         db.execute(
-            text("""
+            sql_text("""
                 INSERT INTO productos (nombre, precio, moneda, enlace, imagen_url, fuente)
                 VALUES (:nombre, :precio, :moneda, :enlace, :imagen_url, :fuente)
             """),
@@ -83,7 +83,7 @@ def recibir_producto(payload: ProductoIn):
 def listar_productos():
     db = SessionLocal()
     try:
-        result = db.execute(text("SELECT * FROM productos ORDER BY created_at DESC LIMIT 10"))
+        result = db.execute(sql_text("SELECT * FROM productos ORDER BY created_at DESC LIMIT 10"))
         productos = [dict(row._mapping) for row in result]
         return {"productos": productos}
     finally:
@@ -103,7 +103,7 @@ async def telegram_webhook(request: Request):
 
     # --- CONSULTAR PRODUCTOS EN LA BASE ---
     db = SessionLocal()
-    result = db.execute(text("SELECT nombre, precio, moneda, enlace, imagen_url, fuente, created_at FROM productos ORDER BY created_at DESC LIMIT 5"))
+    result = db.execute(sql_text("SELECT nombre, precio, moneda, enlace, imagen_url, fuente, created_at FROM productos ORDER BY created_at DESC LIMIT 5"))
     productos = [dict(row._mapping) for row in result]
     db.close()
 
