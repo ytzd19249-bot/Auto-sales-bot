@@ -12,9 +12,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
-openai.api_key = OPENAI_API_KEY
 
+openai.api_key = OPENAI_API_KEY
 engine = create_engine(DATABASE_URL)
+scheduler = AsyncIOScheduler()
 
 # ───────────────────────────────
 # FUNCIÓN PARA ENVIAR MENSAJES
@@ -33,7 +34,6 @@ async def enviar_mensaje(chat_id, texto):
 # FUNCIÓN PARA MANEJAR MENSAJES DEL BOT DE VENTAS
 # ───────────────────────────────
 async def manejar_mensaje_ventas(data):
-    # Acepta mensajes normales, editados o callback queries
     mensaje = data.get("message") or data.get("edited_message") or data.get("callback_query", {}).get("message")
     if not mensaje:
         return
@@ -72,19 +72,8 @@ async def enviar_productos(chat_id):
         await enviar_mensaje(chat_id, f"⚠️ Error al obtener productos: {e}")
 
 # ───────────────────────────────
-# ENDPOINT DEL WEBHOOK DE VENTAS
+# LIMPIEZA AUTOMÁTICA DE PRODUCTOS
 # ───────────────────────────────
-@app.post("/webhook_ventas")
-async def webhook_ventas(request: Request):
-    data = await request.json()
-    await manejar_mensaje_ventas(data)
-    return {"ok": True}
-
-# ───────────────────────────────
-# SCHEDULER CADA 12 HORAS (LIMPIEZA DE PRODUCTOS)
-# ───────────────────────────────
-scheduler = AsyncIOScheduler()
-
 @scheduler.scheduled_job("interval", hours=12)
 async def ciclo_ventas():
     try:
@@ -97,6 +86,15 @@ async def ciclo_ventas():
         print("🧹 Limpieza de productos antiguos completada.")
     except Exception as e:
         print(f"Error en limpieza automática: {e}")
+
+# ───────────────────────────────
+# ENDPOINT DEL WEBHOOK DE VENTAS
+# ───────────────────────────────
+@app.post("/webhook_ventas")
+async def webhook_ventas(request: Request):
+    data = await request.json()
+    await manejar_mensaje_ventas(data)
+    return {"ok": True}
 
 # ───────────────────────────────
 # INICIO DEL BOT
@@ -113,12 +111,13 @@ async def startup_event():
     print("🚀 Bot de ventas iniciado correctamente y webhook configurado.")
 
 @app.get("/")
-def home():
+async def home():
     return {"status": "Bot de ventas activo 🚀"}
 
 # ───────────────────────────────
-# EJECUCIÓN LOCAL
+# MANTENER VIVO EL SERVICIO
 # ───────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
+    asyncio.get_event_loop().run_forever()
