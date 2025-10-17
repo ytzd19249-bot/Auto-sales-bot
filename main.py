@@ -9,16 +9,21 @@ from sqlalchemy import create_engine, text
 app = FastAPI()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+# ✅ Ahora detecta ambas variables (TELEGRAM_TOKEN o TELEGRAM_BOT_TOKEN)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PUBLIC_URL = os.getenv("PUBLIC_URL")
+
+# ✅ También acepta PUBLIC_URL o WEBHOOK_URL (según como esté en Render)
+PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("WEBHOOK_URL")
 
 openai.api_key = OPENAI_API_KEY
 engine = create_engine(DATABASE_URL)
 scheduler = AsyncIOScheduler()
 
 # ───────────────────────────────
-# FUNCIÓN PARA ENVIAR MENSAJES (CON CONTROL DE ERRORES)
+# FUNCIÓN PARA ENVIAR MENSAJES
 # ───────────────────────────────
 async def enviar_mensaje(chat_id, texto):
     try:
@@ -33,7 +38,7 @@ async def enviar_mensaje(chat_id, texto):
         print("Error enviando mensaje:", e)
 
 # ───────────────────────────────
-# FUNCIÓN PARA MANEJAR MENSAJES DEL BOT DE VENTAS
+# MANEJO DE MENSAJES DEL BOT DE VENTAS
 # ───────────────────────────────
 async def manejar_mensaje_ventas(data):
     mensaje = data.get("message") or data.get("edited_message") or data.get("callback_query", {}).get("message")
@@ -52,7 +57,7 @@ async def manejar_mensaje_ventas(data):
         await enviar_mensaje(chat_id, "No entendí eso, pero estoy aquí para ayudarte a vender 😎")
 
 # ───────────────────────────────
-# FUNCIÓN PARA ENVIAR PRODUCTOS DESDE LA BASE DE DATOS
+# ENVÍO DE PRODUCTOS DESDE LA BASE DE DATOS
 # ───────────────────────────────
 async def enviar_productos(chat_id):
     try:
@@ -90,7 +95,7 @@ async def ciclo_ventas():
         print(f"Error en limpieza automática: {e}")
 
 # ───────────────────────────────
-# ENDPOINT DEL WEBHOOK DE VENTAS
+# WEBHOOK DEL BOT DE VENTAS
 # ───────────────────────────────
 @app.post("/webhook_ventas")
 async def webhook_ventas(request: Request):
@@ -99,12 +104,12 @@ async def webhook_ventas(request: Request):
     return {"ok": True}
 
 # ───────────────────────────────
-# INICIO DEL BOT
+# ARRANQUE DEL BOT
 # ───────────────────────────────
 @app.on_event("startup")
 async def startup_event():
     scheduler.start()
-    await asyncio.sleep(10)  # 🔧 Espera 10s para evitar 404 en Render
+    await asyncio.sleep(10)  # Espera 10s para evitar 404 de Render
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
