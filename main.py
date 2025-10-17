@@ -104,6 +104,7 @@ async def webhook_ventas(request: Request):
 @app.on_event("startup")
 async def startup_event():
     scheduler.start()
+    await asyncio.sleep(10)  # 🔧 Espera 10s para evitar 404 en Render
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
