@@ -11,29 +11,35 @@ app = FastAPI()
 DATABASE_URL = os.getenv("DATABASE_URL")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PUBLIC_URL = os.getenv("PUBLIC_URL")  # URL pública de Render
+PUBLIC_URL = os.getenv("PUBLIC_URL")
 openai.api_key = OPENAI_API_KEY
 
 engine = create_engine(DATABASE_URL)
 
 # ───────────────────────────────
-# FUNCIONES TELEGRAM
+# FUNCIÓN PARA ENVIAR MENSAJES
 # ───────────────────────────────
 async def enviar_mensaje(chat_id, texto):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}
-    async with httpx.AsyncClient() as client:
-        await client.post(url, json=payload)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"}
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload)
+            print("Respuesta Telegram:", r.text)
+    except Exception as e:
+        print("Error enviando mensaje:", e)
 
 # ───────────────────────────────
-# LÓGICA DEL BOT DE VENTAS
+# FUNCIÓN PARA MANEJAR MENSAJES DEL BOT DE VENTAS
 # ───────────────────────────────
 async def manejar_mensaje_ventas(data):
-    if "message" not in data:
+    # Acepta mensajes normales, editados o callback queries
+    mensaje = data.get("message") or data.get("edited_message") or data.get("callback_query", {}).get("message")
+    if not mensaje:
         return
 
-    chat_id = data["message"]["chat"]["id"]
-    texto = data["message"].get("text", "").lower()
+    chat_id = mensaje["chat"]["id"]
+    texto = mensaje.get("text", "").lower() if "text" in mensaje else ""
 
     if "hola" in texto:
         await enviar_mensaje(chat_id, "¡Hola! Soy el *bot de ventas* 💰")
@@ -44,7 +50,7 @@ async def manejar_mensaje_ventas(data):
         await enviar_mensaje(chat_id, "No entendí eso, pero estoy aquí para ayudarte a vender 😎")
 
 # ───────────────────────────────
-# FUNCIÓN PARA ENVIAR PRODUCTOS
+# FUNCIÓN PARA ENVIAR PRODUCTOS DESDE LA BASE DE DATOS
 # ───────────────────────────────
 async def enviar_productos(chat_id):
     try:
@@ -53,7 +59,7 @@ async def enviar_productos(chat_id):
             productos = result.fetchall()
 
         if not productos:
-            await enviar_mensaje(chat_id, "Aún no hay productos cargados por el bot investigador 🕐")
+            await enviar_mensaje(chat_id, "Aún no hay productos cargados 🕐")
             return
 
         mensaje = "🛍 *Top productos más vendidos:*\n\n"
@@ -75,7 +81,7 @@ async def webhook_ventas(request: Request):
     return {"ok": True}
 
 # ───────────────────────────────
-# CONFIGURACIÓN DEL SCHEDULER (CADA 12 HORAS)
+# SCHEDULER CADA 12 HORAS (LIMPIEZA DE PRODUCTOS)
 # ───────────────────────────────
 scheduler = AsyncIOScheduler()
 
@@ -99,10 +105,11 @@ async def ciclo_ventas():
 async def startup_event():
     scheduler.start()
     async with httpx.AsyncClient() as client:
-        await client.get(
+        resp = await client.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
             params={"url": f"{PUBLIC_URL}/webhook_ventas"},
         )
+        print("Webhook respuesta:", resp.text)
     print("🚀 Bot de ventas iniciado correctamente y webhook configurado.")
 
 @app.get("/")
