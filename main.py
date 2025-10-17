@@ -18,7 +18,7 @@ engine = create_engine(DATABASE_URL)
 scheduler = AsyncIOScheduler()
 
 # ───────────────────────────────
-# FUNCIÓN PARA ENVIAR MENSAJES
+# FUNCIÓN PARA ENVIAR MENSAJES (CON CONTROL DE ERRORES)
 # ───────────────────────────────
 async def enviar_mensaje(chat_id, texto):
     try:
@@ -27,6 +27,8 @@ async def enviar_mensaje(chat_id, texto):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload)
             print("Respuesta Telegram:", r.text)
+        if r.status_code != 200:
+            print("⚠️ Error enviando:", r.status_code, r.text)
     except Exception as e:
         print("Error enviando mensaje:", e)
 
