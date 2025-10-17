@@ -9,14 +9,9 @@ from sqlalchemy import create_engine, text
 app = FastAPI()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# ✅ Ahora detecta ambas variables (TELEGRAM_TOKEN o TELEGRAM_BOT_TOKEN)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # token corregido
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# ✅ También acepta PUBLIC_URL o WEBHOOK_URL (según como esté en Render)
-PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("WEBHOOK_URL")
+PUBLIC_URL = os.getenv("PUBLIC_URL")
 
 openai.api_key = OPENAI_API_KEY
 engine = create_engine(DATABASE_URL)
@@ -38,7 +33,7 @@ async def enviar_mensaje(chat_id, texto):
         print("Error enviando mensaje:", e)
 
 # ───────────────────────────────
-# MANEJO DE MENSAJES DEL BOT DE VENTAS
+# FUNCIÓN PRINCIPAL DEL BOT
 # ───────────────────────────────
 async def manejar_mensaje_ventas(data):
     mensaje = data.get("message") or data.get("edited_message") or data.get("callback_query", {}).get("message")
@@ -46,18 +41,35 @@ async def manejar_mensaje_ventas(data):
         return
 
     chat_id = mensaje["chat"]["id"]
-    texto = mensaje.get("text", "").lower() if "text" in mensaje else ""
+    texto = mensaje.get("text", "").strip()
+    if not texto:
+        return
 
-    if "hola" in texto:
-        await enviar_mensaje(chat_id, "¡Hola! Soy el *bot de ventas* 💰")
-    elif "productos" in texto or "ver productos" in texto:
+    texto_lower = texto.lower()
+
+    # ────────────── COMANDOS BÁSICOS ──────────────
+    if "hola" in texto_lower or "/start" in texto_lower:
+        await enviar_mensaje(chat_id, "¡Hola! Soy tu *bot de ventas inteligente* 🤖💰")
+    elif "productos" in texto_lower or "ver productos" in texto_lower:
         await enviar_mensaje(chat_id, "Buscando los productos más vendidos... 🔍")
         await enviar_productos(chat_id)
     else:
-        await enviar_mensaje(chat_id, "No entendí eso, pero estoy aquí para ayudarte a vender 😎")
+        # ────────────── MODO INTELIGENTE (GPT) ──────────────
+        try:
+            respuesta = await openai.ChatCompletion.acreate(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "Eres un experto en ventas y atención al cliente. Hablas de forma amigable, útil y profesional."},
+                    {"role": "user", "content": texto}
+                ]
+            )
+            respuesta_texto = respuesta.choices[0].message.content
+            await enviar_mensaje(chat_id, respuesta_texto)
+        except Exception as e:
+            await enviar_mensaje(chat_id, f"⚠️ Error al procesar con IA: {e}")
 
 # ───────────────────────────────
-# ENVÍO DE PRODUCTOS DESDE LA BASE DE DATOS
+# FUNCIÓN PARA ENVIAR PRODUCTOS
 # ───────────────────────────────
 async def enviar_productos(chat_id):
     try:
@@ -95,7 +107,7 @@ async def ciclo_ventas():
         print(f"Error en limpieza automática: {e}")
 
 # ───────────────────────────────
-# WEBHOOK DEL BOT DE VENTAS
+# ENDPOINT DEL WEBHOOK
 # ───────────────────────────────
 @app.post("/webhook_ventas")
 async def webhook_ventas(request: Request):
@@ -104,12 +116,11 @@ async def webhook_ventas(request: Request):
     return {"ok": True}
 
 # ───────────────────────────────
-# ARRANQUE DEL BOT
+# INICIO DEL BOT
 # ───────────────────────────────
 @app.on_event("startup")
 async def startup_event():
     scheduler.start()
-    await asyncio.sleep(10)  # Espera 10s para evitar 404 de Render
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
@@ -123,7 +134,7 @@ async def home():
     return {"status": "Bot de ventas activo 🚀"}
 
 # ───────────────────────────────
-# MANTENER VIVO EL SERVICIO
+# EJECUCIÓN
 # ───────────────────────────────
 if __name__ == "__main__":
     import uvicorn
