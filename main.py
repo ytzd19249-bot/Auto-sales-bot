@@ -138,4 +138,18 @@ async def start():
     scheduler.start()
     asyncio.create_task(set_webhook())
 
-async def set
+async def set_webhook():
+    await asyncio.sleep(5)  # Espera 5 segundos para que la app esté lista
+    async with httpx.AsyncClient() as client:
+        url = f"{PUBLIC_URL}/webhook_ventas"
+        res = await client.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={url}"
+        )
+        print("[VENTAS] 🚀 Webhook configurado:", res.json())
+
+# ───────────────────────────────
+# ENDPOINT RAÍZ
+# ───────────────────────────────
+@app.get("/")
+def root():
+    return {"ok": True, "bot": "ventas", "status": "activo"}
