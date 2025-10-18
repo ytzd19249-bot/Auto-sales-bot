@@ -1,24 +1,43 @@
 import os
+import asyncio
+import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, text
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application
 from datetime import datetime
-import asyncio
 
 # ───────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN GENERAL
 # ───────────────────────────────
 app = FastAPI(title="Bot de Ventas", version="1.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "ventas_admin_12345")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # https://bot-ventas.onrender.com
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-
 scheduler = AsyncIOScheduler(timezone="America/Costa_Rica")
 
 # ───────────────────────────────
-# ENDPOINT PARA RECIBIR PRODUCTOS
+# INICIALIZAR BOT TELEGRAM
+# ───────────────────────────────
+telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# ───────────────────────────────
+# ENDPOINT PRINCIPAL / WEBHOOK
+# ───────────────────────────────
+@app.post("/webhook_ventas")
+async def telegram_webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return {"ok": True}
+
+# ───────────────────────────────
+# ENDPOINT PARA RECIBIR PRODUCTOS DEL INVESTIGADOR
 # ───────────────────────────────
 @app.post("/ingestion/productos")
 async def recibir_productos(req: Request, authorization: str = Header(None)):
@@ -60,6 +79,43 @@ async def recibir_productos(req: Request, authorization: str = Header(None)):
     return {"ok": True, "insertados": insertados}
 
 # ───────────────────────────────
+# COMANDO /productos EN TELEGRAM
+# ───────────────────────────────
+async def listar_productos(update: Update, context):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT titulo, precio, categoria, link_afiliado
+                FROM productos
+                ORDER BY fecha DESC
+                LIMIT 10;
+            """))
+            productos = result.fetchall()
+
+        if not productos:
+            await update.message.reply_text("No hay productos registrados todavía.")
+            return
+
+        for p in productos:
+            titulo = p[0]
+            precio = p[1]
+            categoria = p[2]
+            link = p[3]
+            texto = (
+                f"📦 *{titulo}*\n"
+                f"💰 Precio: ${precio}\n"
+                f"🏷 Categoría: {categoria}\n"
+                f"[🔗 Ver producto]({link})"
+            )
+            await update.message.reply_markdown(texto)
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+
+telegram_app.add_handler(
+    telegram.ext.CommandHandler("productos", listar_productos)
+)
+
+# ───────────────────────────────
 # LIMPIEZA AUTOMÁTICA DE PRODUCTOS VIEJOS
 # ───────────────────────────────
 def limpiar_productos_viejos():
@@ -75,21 +131,23 @@ def limpiar_productos_viejos():
     except Exception as e:
         print(f"[VENTAS] ⚠️ Error limpiando productos: {e}")
 
-# ───────────────────────────────
-# TAREAS PROGRAMADAS
-# ───────────────────────────────
 @scheduler.scheduled_job("interval", hours=12)
 def ciclo_limpieza():
     limpiar_productos_viejos()
 
+# ───────────────────────────────
+# ARRANQUE
+# ───────────────────────────────
 @app.on_event("startup")
-async def start_scheduler():
+async def start():
     scheduler.start()
-    print("[VENTAS] 🚀 Bot de ventas iniciado y scheduler corriendo cada 12h.")
+    # Configurar webhook en Telegram
+    async with httpx.AsyncClient() as client:
+        await client.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={PUBLIC_URL}/webhook_ventas"
+        )
+    print("[VENTAS] 🚀 Bot de ventas iniciado con webhook activo y limpieza cada 12h.")
 
-# ───────────────────────────────
-# ENDPOINT PRINCIPAL
-# ───────────────────────────────
 @app.get("/")
 def root():
     return {"ok": True, "bot": "ventas", "status": "activo"}
