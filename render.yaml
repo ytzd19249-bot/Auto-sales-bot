@@ -1,18 +1,7 @@
 services:
   - type: web
-    name: auto-sales-bot
+    name: vendedorbt
     env: python
-    plan: free
-    region: oregon
-    runtime: python3.11
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: ADMIN_TOKEN
-        sync: false
-      - key: PUBLIC_URL
-        sync: false
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
+    runtime: python-3.12.6
