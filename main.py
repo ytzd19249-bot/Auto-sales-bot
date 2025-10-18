@@ -4,8 +4,8 @@ import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, text
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application
+from telegram import Update
+from telegram.ext import Application, CommandHandler
 from datetime import datetime
 
 # ───────────────────────────────
@@ -97,10 +97,7 @@ async def listar_productos(update: Update, context):
             return
 
         for p in productos:
-            titulo = p[0]
-            precio = p[1]
-            categoria = p[2]
-            link = p[3]
+            titulo, precio, categoria, link = p
             texto = (
                 f"📦 *{titulo}*\n"
                 f"💰 Precio: ${precio}\n"
@@ -111,9 +108,7 @@ async def listar_productos(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
-telegram_app.add_handler(
-    telegram.ext.CommandHandler("productos", listar_productos)
-)
+telegram_app.add_handler(CommandHandler("productos", listar_productos))
 
 # ───────────────────────────────
 # LIMPIEZA AUTOMÁTICA DE PRODUCTOS VIEJOS
@@ -136,18 +131,11 @@ def ciclo_limpieza():
     limpiar_productos_viejos()
 
 # ───────────────────────────────
-# ARRANQUE
+# ARRANQUE DEL SERVICIO Y WEBHOOK
 # ───────────────────────────────
 @app.on_event("startup")
 async def start():
     scheduler.start()
-    # Configurar webhook en Telegram
-    async with httpx.AsyncClient() as client:
-        await client.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={PUBLIC_URL}/webhook_ventas"
-        )
-    print("[VENTAS] 🚀 Bot de ventas iniciado con webhook activo y limpieza cada 12h.")
+    asyncio.create_task(set_webhook())
 
-@app.get("/")
-def root():
-    return {"ok": True, "bot": "ventas", "status": "activo"}
+async def set
