@@ -3,6 +3,6 @@ uvicorn
 httpx
 python-telegram-bot==20.3
 apscheduler
-sqlalchemy==2.0.23
+sqlalchemy==2.0.36
 psycopg2-binary
 openai
