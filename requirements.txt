@@ -1,9 +1,9 @@
-fastapi==0.117.1
-uvicorn==0.23.0
-sqlalchemy==2.0.43
-psycopg2-binary==2.9.10
-httpx==0.28.1
+fastapi==0.110.0
+uvicorn==0.23.2
+sqlalchemy==2.0.29
+psycopg2-binary==2.9.9
+httpx==0.24.1
 openai==0.27.8
 python-dotenv==1.0.0
-apscheduler
+apscheduler==3.10.4
 python-telegram-bot==20.3
