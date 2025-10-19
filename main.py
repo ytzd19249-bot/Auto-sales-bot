@@ -32,9 +32,12 @@ telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 # ───────────────────────────────
 @app.post("/webhook_ventas")
 async def telegram_webhook(req: Request):
-    data = await req.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
+    try:
+        data = await req.json()
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+    except Exception as e:
+        print(f"[VENTAS] ⚠️ Error procesando mensaje: {e}")
     return {"ok": True}
 
 # ───────────────────────────────
@@ -80,8 +83,11 @@ async def recibir_productos(req: Request, authorization: str = Header(None)):
     return {"ok": True, "insertados": insertados}
 
 # ───────────────────────────────
-# COMANDO /productos EN TELEGRAM
+# COMANDOS DE TELEGRAM
 # ───────────────────────────────
+async def start_command(update: Update, context):
+    await update.message.reply_text("👋 ¡Bienvenido a CompraFácil! Usa /productos para ver lo que tenemos.")
+
 async def listar_productos(update: Update, context):
     try:
         with engine.connect() as conn:
@@ -109,6 +115,7 @@ async def listar_productos(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
+telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(CommandHandler("productos", listar_productos))
 
 # ───────────────────────────────
