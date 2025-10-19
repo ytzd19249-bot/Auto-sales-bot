@@ -1,3 +1,4 @@
+# main.py
 import os
 import asyncio
 import httpx
@@ -16,7 +17,7 @@ app = FastAPI(title="Bot de Ventas", version="1.0")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "ventas_admin_12345")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-PUBLIC_URL = os.getenv("PUBLIC_URL")  # https://bot-ventas.onrender.com
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # https://vendedorbt.onrender.com
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 scheduler = AsyncIOScheduler(timezone="America/Costa_Rica")
@@ -136,10 +137,16 @@ def ciclo_limpieza():
 @app.on_event("startup")
 async def start():
     scheduler.start()
-    asyncio.create_task(set_webhook())
+    asyncio.create_task(iniciar_bot())
+
+async def iniciar_bot():
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await set_webhook()
+    print("[VENTAS] 🤖 Bot de Telegram iniciado correctamente")
 
 async def set_webhook():
-    await asyncio.sleep(5)  # Espera 5 segundos para que la app esté lista
+    await asyncio.sleep(5)
     async with httpx.AsyncClient() as client:
         url = f"{PUBLIC_URL}/webhook_ventas"
         res = await client.get(
